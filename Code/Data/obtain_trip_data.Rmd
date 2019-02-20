@@ -1,0 +1,318 @@
+---
+title: "SF Bikeshare Status - Initial Explore"
+output: html_notebook
+---
+
+
+  
+## Setup    
+  Load the relevant libraries.
+```{r}
+# {r, message=FALSE, warning=FALSE}
+
+# rm(list = ls())
+# .rs.restartR()
+
+
+library("tidyverse")
+# install.packages("data.table")
+library("data.table")
+library("lubridate")
+library("DBI")
+# install.packages("RSQLite")
+library("RSQLite")
+
+```
+  
+    
+  Session Info.
+```{r}
+
+sessionInfo()
+
+```
+
+
+  Setup the root directory.
+```{r "setup", include = FALSE}
+
+require("knitr")
+
+opts_knit$set(root.dir = "/home/rstudio/Dropbox/_AWS/SF_Bikeshare_Status/")
+
+```
+  
+    
+  Setting `wd` as the working directory.
+```{r}
+
+wd <- getwd()
+
+wd
+
+```
+  
+    
+  Get the `station_id` values produced in `obtain_base_data.Rmd`.
+```{r}
+
+station_id_select <-
+  read_rds(path = paste0(wd,
+                         "/Data/Interim/",
+                         "station_id_select.rds"
+                         )
+           )
+
+station_id_select
+
+```
+  
+    
+  Get the data from the SqlLite database.
+```{r}
+
+# connect to the sqlite database
+con <- dbConnect(SQLite(),
+                 paste0(wd,
+                        "/Data/Raw/",
+                        "database.sqlite"
+                        )
+                 )
+
+
+# get a list of the talbles
+as.data.frame(dbListTables(con))
+
+
+# get data for every 5 minutes
+myQuery <- dbSendQuery(con,
+                       "Select          *
+
+                        From            trip
+
+                        Where         start_station_id in (22, 61, 84, 83, 10, 21)
+                            Or        end_station_id in (22, 61, 84, 83, 10, 21)
+                       "
+                       )
+
+sf_trip <- dbFetch(myQuery, n = 10000) %>% 
+  as.data.table
+
+
+class(sf_trip)
+glimpse(sf_trip)
+object.size(sf_trip)
+summary(sf_trip)
+
+dbClearResult(myQuery)
+# View(sf_trip %>% head(500))
+
+rm(con, myQuery)
+
+```
+  
+    
+  Update variable types.
+```{r}
+
+sf_trip_var_type_update <-
+  sf_trip %>% 
+  mutate_at(c("id", "start_station_name", "start_station_id", "end_station_name",
+              "end_station_id", "bike_id", "subscription_type", "zip_code"
+              ),
+            as.factor
+            ) %>% 
+  mutate(start_date = paste0(start_date, ":00"),
+         end_date = paste0(end_date, ":00")
+         )
+
+
+func_chr_to_dt <-
+  function(data, col) {
+    col_enquo = enquo(col)
+    
+    new_df =
+      data %>% 
+      mutate(mth = str_extract(string = !!col_enquo, pattern = "^\\d{1,2}") %>% 
+               str_pad(width = 2, side = "left", pad = "0"),
+             day = str_extract(string = !!col_enquo, pattern = "(?<=/)\\d{1,2}(?=/)") %>% 
+               str_pad(width = 2, side = "left", pad = "0"),
+             yr = str_extract(string = !!col_enquo, pattern = "(?<=/)\\d{4}(?=\\s)"),
+             hr = str_extract(string = !!col_enquo, pattern = "(?<=\\s)\\d{1,2}(?=:)") %>% 
+               str_pad(width = 2, side = "left", pad = "0"),
+             min = str_extract(string = !!col_enquo, pattern = "(?<=:)\\d{1,2}(?=:)") %>% 
+               str_pad(width = 2, side = "left", pad = "0"),
+             sec = str_extract(string = !!col_enquo, pattern = "(?<=:)\\d{1,2}$") %>% 
+               str_pad(width = 2, side = "left", pad = "0"),
+             dt_chr = paste0(yr, "-", mth, "-", day, " ", hr, ":", min, ":", sec),
+             dt = as_datetime(dt_chr, tz = "America/Los_Angeles")
+             ) %>% 
+      select(-(mth:dt_chr))
+    
+    return(new_df)
+    }
+
+
+sf_trip_clean_dates <-
+  func_chr_to_dt(data = sf_trip_var_type_update,
+                 col = start_date
+                 ) %>% 
+  rename(start_dt = dt) %>% 
+  func_chr_to_dt(col = end_date) %>% 
+  rename(end_dt = dt)
+
+str(sf_trip_clean_dates)
+summary(sf_trip_clean_dates)
+# View(sf_trip_clean_dates)
+
+
+rm(sf_trip, sf_trip_var_type_update)
+
+```
+  
+    
+  Create `date_ceiling` variables to aggregate at the 5min level.
+```{r}
+
+date_ceilings <-
+  sf_trip_clean_dates %>% 
+  mutate(start_dt_5min_ceil = ceiling_date(start_dt, unit = "5 mins"),
+         end_dt_5min_ceil = ceiling_date(end_dt, unit = "5 mins")
+         )
+
+str(date_ceilings)
+# View(date_ceilings)
+
+
+rm(sf_trip_clean_dates)
+
+```
+  
+    
+  Create a "wide" counts dataset to later be joined to the station status data.
+```{r}
+
+# Initial counts
+cnts_start <-
+  date_ceilings %>% 
+  filter(start_station_id %in% station_id_select) %>% 
+  group_by(start_station_id, subscription_type, start_dt_5min_ceil) %>% 
+  summarise(cnt_5min_window_start = n()
+            ) %>% 
+  ungroup() %>% 
+  arrange(start_station_id, subscription_type, start_dt_5min_ceil)
+
+
+cnts_end <-
+  date_ceilings %>% 
+  filter(end_station_id %in% station_id_select) %>% 
+  group_by(end_station_id, subscription_type, end_dt_5min_ceil) %>% 
+  summarise(cnt_5min_window_end = n()
+            ) %>% 
+  ungroup() %>% 
+  arrange(end_station_id, subscription_type, end_dt_5min_ceil)
+
+# View(cnts_start)
+# View(cnts_end)
+
+cnts_start_end <-
+  cnts_start %>% 
+  full_join(y = cnts_end,
+            by = c("start_station_id" ="end_station_id",
+                   "subscription_type" = "subscription_type",
+                   "start_dt_5min_ceil" = "end_dt_5min_ceil"
+                   )
+            ) %>% 
+  arrange(start_station_id, start_dt_5min_ceil) %>% 
+  rename(station_id = start_station_id,
+         dt_5min_ceil = start_dt_5min_ceil
+         ) %>% 
+  mutate(station_id = factor(station_id))
+
+str(cnts_start_end)
+summary(cnts_start_end)
+# View(cnts_start_end %>% head(1000))
+
+
+# turn into a wide dataset
+trip_cnts_start_end_wide <-
+  cnts_start_end %>% 
+  gather(key = "key",
+         value = "value",
+         starts_with("cnt_5min_window")
+         ) %>% 
+  unite(col = new,
+        subscription_type,
+        key
+        ) %>% 
+  spread(key = new,
+         value = value,
+         fill = 0
+         ) %>% 
+  # ungroup() %>% 
+  as.data.table() %>% 
+  setkey(station_id, dt_5min_ceil)
+
+str(trip_cnts_start_end_wide)
+View(trip_cnts_start_end_wide)
+
+
+
+# min(cnts_start_end_wide$dt_5min_ceil)
+# max(cnts_start_end_wide$dt_5min_ceil)
+# 
+# 
+# 
+# all_dt <-
+#   data.frame(dt = seq.POSIXt(from = as_datetime("2013-08-29 00:00:00",
+#                                                 tz = "America/Los_Angeles"
+#                                                 ),
+#                              to = as_datetime("2014-01-23 00:00:00",
+#                                               tz = "America/Los_Angeles"
+#                                               ),
+#                              by = "5 mins"
+#                              )
+#              ) %>% 
+#   as.data.table() %>% 
+#   setkey(dt)
+# 
+# str(all_dt)
+# View(all_dt %>% head(1000))
+# 
+# 
+# all_dt_all_cnts <-
+#   all_dt %>% 
+#   left_join(y = cnts_start_end_wide,
+#             by = c("dt" = "dt_5min_ceil")
+#             ) %>% 
+#   filter(!is.na(station_id)) %>% 
+#   as.data.table() %>% 
+#   setkey(station_id, dt)
+# 
+# str(all_dt_all_cnts)
+# View(all_dt_all_cnts %>% head(1000))
+
+```
+  
+    
+  Save the data.
+```{r}
+
+write_rds(trip_cnts_start_end_wide,
+          path = paste0(wd,
+                        "/Data/Interim/",
+                        "trip_cnts_start_end_wide.rds"
+                        )
+          )
+
+```
+  
+    
+  Remove no-longer-needed files.
+```{r}
+
+rm(cnts_end, cnts_start, cnts_start_end, date_ceilings, func_chr_to_dt)
+
+```
+  
+
