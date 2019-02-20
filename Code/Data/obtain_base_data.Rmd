@@ -1,0 +1,208 @@
+---
+title: "SF Bikeshare Status - Initial Explore"
+output: html_notebook
+---
+
+
+  
+## Setup    
+  Load the relevant libraries.
+```{r}
+# {r, message=FALSE, warning=FALSE}
+
+# rm(list = ls())
+# .rs.restartR()
+
+
+library("tidyverse")
+# install.packages("data.table")
+library("data.table")
+library("lubridate")
+library("DBI")
+# install.packages("RSQLite")
+library("RSQLite")
+
+```
+  
+    
+  Session Info.
+```{r}
+
+sessionInfo()
+
+```
+
+
+  Setup the root directory.
+```{r "setup", include = FALSE}
+
+require("knitr")
+
+opts_knit$set(root.dir = "/home/rstudio/Dropbox/_AWS/SF_Bikeshare_Status/")
+
+```
+  
+    
+  Setting `wd` as the working directory.
+```{r}
+
+wd <- getwd()
+
+wd
+
+```
+  
+    
+  Get the data from the SqlLite database.
+```{r}
+
+# connect to the sqlite database
+con <- dbConnect(SQLite(),
+                 paste0(wd,
+                        "/Data/Raw/",
+                        "database.sqlite"
+                        )
+                 )
+
+
+# get a list of the talbles
+as.data.frame(dbListTables(con))
+
+
+# get data for every 5 minutes
+myQuery <- dbSendQuery(con,
+                       "Select          *
+
+                        From            status
+
+                          Where         (     time like '%:_0:__'
+                                          or  time like '%:_5:__'
+                                         )
+                       "
+                       )
+
+sf_status <- dbFetch(myQuery, n = -1) %>% 
+  as.data.table
+
+
+class(sf_status)
+glimpse(sf_status)
+object.size(sf_status)
+summary(sf_status)
+
+dbClearResult(myQuery)
+# View(sf_status %>% head(500))
+
+```
+  
+    
+  For testing purposes, select only six `station_id` values - the two most frequently used stations, the two least frequently used stations, and two in the middle.
+```{r}
+
+avg_bikes_available <-
+  sf_status[ ,
+            .(bike_avail_cnt = .N,
+              bike_avail_avg = mean(bikes_available, na.rm = TRUE)
+              ),
+            by = station_id
+            ][order(bike_avail_cnt,
+                    bike_avail_avg
+                    )
+              ][ , row_num := row_number(bike_avail_cnt)]
+
+# View(avg_bikes_available)
+
+
+station_id_2top <-
+  avg_bikes_available %>% 
+  top_n(n = 2,
+        wt = row_num
+        ) %>% 
+  pull(station_id)
+
+station_id_2bot <-
+  avg_bikes_available %>% 
+  top_n(n = -2,
+        wt = row_num
+        ) %>% 
+  pull(station_id)
+
+station_id_2mid <-
+  avg_bikes_available %>% 
+  filter(row_num == nrow(avg_bikes_available) / 2 |
+           row_num == (nrow(avg_bikes_available) / 2) + 1
+         ) %>% 
+  pull(station_id)
+
+
+station_id_select <-
+  c(station_id_2top, station_id_2bot, station_id_2mid)
+
+station_id_select
+
+
+rm(station_id_2top, station_id_2bot, station_id_2mid)
+
+```
+  
+    
+  Save the data.
+```{r}
+
+write_rds(station_id_select,
+          path = paste0(wd,
+                        "/Data/Interim/",
+                        "station_id_select.rds"
+                        )
+          )
+
+```
+    
+    
+  Update variable types & confirm data pull.
+```{r}
+
+sf_status_select_ids <-
+  sf_status[station_id %in% station_id_select]
+
+sf_status_select_ids$time <- as_datetime(sf_status_select_ids$time)
+sf_status_select_ids$time_min <- minute(sf_status_select_ids$time)
+
+setkey(sf_status_select_ids, time_min)
+
+class(sf_status_select_ids)
+glimpse(sf_status_select_ids)
+object.size(sf_status_select_ids)
+summary(sf_status_select_ids)
+
+unique(sf_status_select_ids$time_min)
+
+sf_status_select_ids <-
+  sf_status_select_ids[ ,time_min := NULL]
+
+str(sf_status_select_ids)
+
+```
+  
+    
+  Save the data.
+```{r}
+
+write_rds(sf_status_select_ids,
+          path = paste0(wd,
+                        "/Data/Interim/",
+                        "sf_status_select_ids.rds"
+                        )
+          )
+
+```
+  
+    
+  Remove no-longer-needed files.
+```{r}
+
+rm(avg_bikes_available, con, myQuery, sf_status)
+
+```
+  
+
