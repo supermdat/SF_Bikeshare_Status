@@ -1,0 +1,183 @@
+---
+title: "SF Bikeshare Status - Create Single Dataset"
+output: html_notebook
+---
+
+
+  
+## Setup    
+  Load the relevant libraries.
+```{r}
+# {r, message=FALSE, warning=FALSE}
+
+# rm(list = ls())
+# .rs.restartR()
+
+
+library("tidyverse")
+# install.packages("data.table")
+library("data.table")
+library("lubridate")
+# library("DBI")
+# install.packages("RSQLite")
+# library("RSQLite")
+
+```
+  
+    
+  Session Info.
+```{r}
+
+sessionInfo()
+
+```
+
+
+  Setup the root directory.
+```{r "setup", include = FALSE}
+
+require("knitr")
+
+opts_knit$set(root.dir = "/home/rstudio/Dropbox/_AWS/SF_Bikeshare_Status/")
+
+```
+  
+    
+  Setting `wd` as the working directory.
+```{r}
+
+wd <- getwd()
+
+wd
+
+```
+  
+    
+  Get the base datasets..
+```{r}
+
+station_id_select <-
+  read_rds(path = paste0(wd,
+                         "/Data/Interim/",
+                         "station_id_select.rds"
+                         )
+           )
+
+message("station_id_select")
+str(station_id_select)
+
+
+sf_status_select_ids <-
+  read_rds(path = paste0(wd,
+                         "/Data/Interim/",
+                         "sf_status_select_ids.rds"
+                         )
+           )
+
+message("sf_status_select_ids")
+str(sf_status_select_ids)
+# View(sf_status_select_ids %>% arrange(station_id, time))
+
+
+trip_cnts_start_end_wide <-
+  read_rds(path = paste0(wd,
+                         "/Data/Interim/",
+                         "trip_cnts_start_end_wide.rds"
+                         )
+           )
+
+message("trip_cnts_start_end_wide")
+str(trip_cnts_start_end_wide)
+# View(trip_cnts_start_end_wide %>% arrange(station_id, dt_5min_ceil))
+
+```
+  
+    
+  To prepare the datasets for joinig, round `sf_status_select_ids$time`, and update the variable types for the variables on which the data are joined.
+```{r}
+
+# round to nearest minute
+sf_status_select_ids <-
+  sf_status_select_ids[ , time_rnd := floor_date(time, unit = "minutes")][ , time := NULL]
+
+
+# update variable types
+sf_status_select_ids$station_id <- as.character(sf_status_select_ids$station_id)
+trip_cnts_start_end_wide$station_id <- as.character(trip_cnts_start_end_wide$station_id)
+
+sf_status_select_ids$time_rnd <- as.character(sf_status_select_ids$time_rnd)
+trip_cnts_start_end_wide$dt_5min_ceil <- as.character(trip_cnts_start_end_wide$dt_5min_ceil)
+
+
+message("sf_status_select_ids")
+str(sf_status_select_ids)
+# View(sf_status_select_ids %>% arrange(station_id, time_rnd) %>% head(1000))
+
+
+message("trip_cnts_start_end_wide")
+str(trip_cnts_start_end_wide)
+# View(trip_cnts_start_end_wide %>% arrange(station_id, dt_5min_ceil) %>% head(1000))
+
+```
+  
+    
+  Merge the datasets, replace `NA` with zero, and update variable types.
+```{r}
+
+# merge itself
+status_trips <-
+  merge(x = sf_status_select_ids,
+        y = trip_cnts_start_end_wide,
+        by.x = c("station_id", "time_rnd"),
+        by.y = c("station_id", "dt_5min_ceil"),
+        all.x = TRUE
+        )
+
+# str(status_trips)
+# View(status_trips %>% head(1000))
+# summary(status_trips)
+
+
+# NA to 0
+status_trips[is.na(status_trips)] <- 0
+
+
+# update variable type
+status_trips <-
+  status_trips %>% 
+  mutate(station_id = as.factor(station_id),
+         time_rnd = as_datetime(status_trips$time_rnd, tz = "America/Los_Angeles")
+         ) %>% 
+  mutate_at(vars(matches("cnt_5min")), as.integer) %>% 
+  as.data.table() %>% 
+  setkey(station_id, time_rnd)
+
+
+str(status_trips)
+View(status_trips %>% head(1000))
+summary(status_trips)
+
+```
+  
+    
+  Save the data.
+```{r}
+
+write_rds(status_trips,
+          path = paste0(wd,
+                        "/Data/Interim/",
+                        "status_trips.rds"
+                        )
+          )
+
+```
+  
+    
+  Remove no-longer-needed files.
+```{r}
+
+rm(sf_status_select_ids, trip_cnts_start_end_wide, station_id_select)
+
+```
+  
+
