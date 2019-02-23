@@ -75,11 +75,13 @@ str(status_trips_time)
   Split the dataset by `station_id` and cleanup the resulting dataset.
 ```{r}
 
+# initial split
 id_split <-
   status_trips_time %>% 
   split(.$station_id)
 
 
+# data cleanup
 id_split <-
   pmap(.l = list(a = id_split),
        .f = function(a) {
