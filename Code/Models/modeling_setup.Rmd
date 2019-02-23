@@ -96,6 +96,51 @@ id_split <-
          }
        )
 
+```
+  
+    
+  Create splits for train/valid/test.
+```{r}
+
+# create a function for the split
+func_train_valid_test <-
+  function(data, pct_train, pct_valid, ...) {
+    row_cnt = data %>% nrow()
+    
+    pct_train = pct_train
+    pct_valid = pct_valid
+    pct_test = 1 - pct_train - pct_valid
+    
+    split_pt_train = round(pct_train * row_cnt, digits = 0)
+    split_pt_valid = round((pct_train + pct_valid) * row_cnt, digits = 0)
+    
+    dt =
+      data %>% 
+      arrange(time_rnd) %>% 
+      mutate(row_num = row_number(),
+             data_type = case_when(row_num < split_pt_train ~ "01_train",
+                                   between(x = row_num,
+                                           lower = split_pt_train,
+                                           upper = split_pt_valid,
+                                           incbounds = TRUE
+                                           ) ~ "02_valid",
+                                   TRUE ~ "03_test"
+                                   ) %>% 
+               factor()
+             )
+    }
+
+
+# run the function
+id_split <-
+  pmap(.l = list(a = id_split),
+       .f = function(a) {
+         data = func_train_valid_test(data = a, pct_train = 0.70, pct_valid = 0.15)
+         }
+       )
+
+
+# confirmation
 pmap(.l = list(a = id_split,
                b = names(id_split)
                ),
