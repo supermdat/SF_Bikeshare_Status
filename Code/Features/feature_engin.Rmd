@@ -1,0 +1,153 @@
+---
+title: "SF Bikeshare Status - Feature Engineering"
+output: html_notebook
+---
+
+
+  
+## Setup    
+  Load the relevant libraries.
+```{r}
+# {r, message=FALSE, warning=FALSE}
+
+# rm(list = ls())
+# .rs.restartR()
+
+
+library("tidyverse")
+# install.packages("data.table")
+library("data.table")
+library("lubridate")
+# install.packages("timetk")
+library("timetk")
+# library("DBI")
+# install.packages("RSQLite")
+# library("RSQLite")
+
+```
+  
+    
+  Session Info.
+```{r}
+
+sessionInfo()
+
+```
+
+
+  Setup the root directory.
+```{r "setup", include = FALSE}
+
+require("knitr")
+
+opts_knit$set(root.dir = "/home/rstudio/Dropbox/_AWS/SF_Bikeshare_Status/")
+
+```
+  
+    
+  Setting `wd` as the working directory.
+```{r}
+
+wd <- getwd()
+
+wd
+
+```
+  
+    
+  Get the base dataset.
+```{r}
+
+status_trips <-
+  read_rds(path = paste0(wd,
+                         "/Data/Interim/",
+                         "status_trips.rds"
+                         )
+           )
+
+message("status_trips")
+str(status_trips)
+# View(status_trips %>% head(1000))
+
+```
+  
+    
+  Create time-based variables.
+```{r}
+
+# status_trips %>% mutate(date = as_date(time_rnd)) %>% select(date) %>% distinct() %>% nrow()
+date_min <- min(status_trips$time_rnd)
+date_max <- max(status_trips$time_rnd)
+
+time_dt <-
+  data.frame(date = seq.POSIXt(from = date_min, to = date_max, by = "5 mins")) %>% 
+  tk_index() %>% 
+  tk_get_timeseries_signature() %>% 
+  select(-index.num,
+         -diff,
+         -year.iso,
+         -month,
+         -month.xts,
+         -second,
+         -hour12,
+         -am.pm,
+         -wday,
+         -wday.xts,
+         -qday,
+         -yday,
+         -week.iso,
+         -week2,
+         -week3,
+         -week4,
+         -mday7
+         ) %>% 
+  rename(date = index) %>% 
+  mutate_at(vars(year:week), as.character) %>% 
+  mutate_at(vars(year:week), as.factor) %>% 
+  as.data.table() %>% 
+  setkey(date)
+
+str(time_dt)
+
+```
+  
+    
+  Merge the datasets.
+```{r}
+
+status_trips_time <-
+  merge(x = status_trips,
+        y = time_dt,
+        by.x = "time_rnd",
+        by.y = "date",
+        all.x = TRUE
+        ) %>% 
+  setkey(station_id, time_rnd)
+
+str(status_trips_time)
+View(status_trips_time %>% head(1000))
+
+```
+  
+    
+  Save the data.
+```{r}
+
+write_rds(status_trips_time,
+          path = paste0(wd,
+                        "/Data/Interim/",
+                        "status_trips_time.rds"
+                        )
+          )
+
+```
+  
+    
+  Remove no-longer-needed files.
+```{r}
+
+rm(status_trips, time_dt, date_min, date_max)
+
+```
+  
+
