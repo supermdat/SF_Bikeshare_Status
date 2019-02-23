@@ -1,0 +1,132 @@
+---
+title: "SF Bikeshare Status - Modeling Setup"
+output: html_notebook
+---
+
+
+  
+## Setup    
+  Load the relevant libraries.
+```{r}
+# {r, message=FALSE, warning=FALSE}
+
+# rm(list = ls())
+# .rs.restartR()
+
+
+library("tidyverse")
+# install.packages("data.table")
+library("data.table")
+# library("lubridate")
+# install.packages("timetk")
+# library("timetk")
+# library("DBI")
+# install.packages("RSQLite")
+# library("RSQLite")
+
+```
+  
+    
+  Session Info.
+```{r}
+
+sessionInfo()
+
+```
+
+
+  Setup the root directory.
+```{r "setup", include = FALSE}
+
+require("knitr")
+
+opts_knit$set(root.dir = "/home/rstudio/Dropbox/_AWS/SF_Bikeshare_Status/")
+
+```
+  
+    
+  Setting `wd` as the working directory.
+```{r}
+
+wd <- getwd()
+
+wd
+
+```
+  
+    
+  Get the base dataset.
+```{r}
+
+status_trips_time <-
+  read_rds(path = paste0(wd,
+                         "/Data/Interim/",
+                         "status_trips_time.rds"
+                         )
+           )
+
+message("status_trips_time")
+str(status_trips_time)
+# View(status_trips_time %>% head(1000))
+
+```
+  
+    
+  Split the dataset by `station_id` and cleanup the resulting dataset.
+```{r}
+
+id_split <-
+  status_trips_time %>% 
+  split(.$station_id)
+
+
+id_split <-
+  pmap(.l = list(a = id_split),
+       .f = function(a) {
+         df = a %>% 
+           tail(n = -3) %>% # remove first three rows because of lags
+           mutate_if(is.factor, factor) %>% 
+           select(-docks_avail_now) %>% # remove `docks_avail_now` because you won't know this at the time of prediction
+           as.data.table() %>% 
+           setkey(time_rnd, station_id)
+         
+         return(df)
+         }
+       )
+
+pmap(.l = list(a = id_split,
+               b = names(id_split)
+               ),
+     .f = function(a, b) {
+       message(b)
+       
+       str(a)
+       }
+     )
+
+View(id_split$`10` %>% head(1000))
+
+```
+  
+    
+  Save the data.
+```{r}
+
+write_rds(id_split,
+          path = paste0(wd,
+                        "/Data/Interim/",
+                        "id_split.rds"
+                        )
+          )
+
+```
+  
+    
+  Remove no-longer-needed files.
+```{r}
+
+rm(status_trips_time)
+
+```
+  
+
