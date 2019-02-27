@@ -575,4 +575,12 @@ rm(automl_leader, automl_models_h2o, id_split, model_path_h2o,
 
 ```
   
+    
+  Shutting down h2o.
+```{r}
+
+h2o.shutdown()
+
+```
+  
 
