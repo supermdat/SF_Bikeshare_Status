@@ -1,0 +1,573 @@
+---
+title: "SF Bikeshare Status - Modeling With Keras (GRU)"
+output: html_notebook
+---
+
+
+  
+**NOTE:** before running this chunk, the AWS Instance Type was switched from t2.micro to t3.2xlarge.
+
+
+## Setup    
+  Load the relevant libraries.
+```{r}
+# {r, message=FALSE, warning=FALSE}
+
+# rm(list = ls())
+# .rs.restartR()
+
+
+library("tidyverse")
+# install.packages("data.table")
+library("data.table")
+# library("lubridate")
+# install.packages("timetk")
+# library("timetk")
+# library("DBI")
+# install.packages("RSQLite")
+# library("RSQLite")
+# install.packages("rJava")
+# library("rJava")
+# install.packages("h2o")
+# library("h2o")
+# install.packages("furrr")
+library("furrr")
+# library("glue")
+# install.packages("reticulate")
+# library("reticulate")
+# install.packages("caret")
+library("caret")
+# install.packages("keras")
+# install_keras()
+library("keras")
+
+```
+  
+    
+  Session Info.
+```{r}
+
+sessionInfo()
+
+```
+
+
+  Setup the root directory.
+```{r "setup", include = FALSE}
+
+require("knitr")
+
+opts_knit$set(root.dir = "/home/rstudio/Dropbox/_AWS/SF_Bikeshare_Status/")
+
+```
+  
+    
+  Setting `wd` as the working directory.
+```{r}
+
+wd <- getwd()
+
+wd
+
+```
+  
+    
+  Get the base dataset.
+```{r}
+
+id_split <-
+  read_rds(path = paste0(wd,
+                         "/Data/Interim/",
+                         "id_split.rds"
+                         )
+           )
+
+id_split <- id_split[1:2]
+
+id_split$`10` %>% 
+  str()
+
+
+# pmap(.l = list(a = id_split,
+#                b = names(id_split)
+#                ),
+#      .f = function(a, b) {
+#        message(b)
+#        
+#        str(a)
+#        }
+#      )
+
+# View(id_split$`10` %>% head(1000))
+
+```
+  
+    
+  One-hot enconde the data.
+```{r}
+
+one_hot <-
+  pmap(.l = list(a = id_split),
+       .f = function(a) {
+         df = select(a,
+                     -station_id,
+                     -row_num,
+                     -data_type
+                     )
+         
+         dmy = dummyVars(bikes_avail_now ~ ., data = df)
+         
+         return(dmy)
+         }
+       )
+
+
+id_split_one_hot <-
+  pmap(.l = list(a = one_hot,
+                 b = id_split
+                 ),
+       .f = function(a, b) {
+         predict(object = a,
+                 newdata = b %>% 
+                   select(-station_id,
+                          -row_num,
+                          -data_type
+                          )
+                 ) %>% 
+           as.data.table %>% 
+           setkey(time_rnd)
+           
+         }
+       )
+
+class(id_split_one_hot$`10`)
+glimpse(id_split_one_hot$`10`)
+# View(id_split_one_hot$`10` %>% head(100))
+
+
+rm(one_hot)
+
+```
+
+
+
+
+```{r}
+
+data <-
+  id_split_one_hot %>% 
+  map(~select(.x, -time_rnd) %>% 
+        data.matrix()
+      )
+
+class(data$`10`)
+
+```
+
+
+```{r}
+
+split_pt <-
+  pmap(.l = list(a = data),
+       .f = function(a) {
+         num_row = nrow(a)
+         
+         train_pt = (num_row * 0.70) %>% base::round(0)
+         
+         valid_pt = (num_row * 0.85) %>% base::round(0)
+         
+         pts = list(train_pt = train_pt,
+                    valid_pt = valid_pt
+                    )
+         
+         return(pts)
+         }
+       )
+
+
+train_data <-
+  pmap(.l = list(a = data,
+                 b = split_pt
+                 ),
+       .f = function(a, b) {
+         dat = a[1:b$train_pt, ]
+         
+         return(dat)
+         }
+       )
+
+mean <-
+  train_data %>% 
+  map(~apply(.x, 2, mean)
+      )
+
+std <-
+  train_data %>% 
+  map(~apply(.x, 2, sd)
+      )
+
+data <-
+  pmap(.l = list(a = data,
+                 b = mean,
+                 c = std
+                 ),
+       .f = function(a, b, c) {
+         res = scale(a, center = b, scale = c)
+         
+         return(res)
+         }
+       )
+
+# rm(split_pt)
+
+```
+
+
+```{r}
+
+generator <- function(data, lookback, delay, min_index, max_index,
+                      shuffle = FALSE, batch_size = 128, step = 6
+                      ) {
+  if (is.null(max_index))
+    max_index <- nrow(data) - delay - 1
+  i <- min_index + lookback
+  function() {
+    if (shuffle) {
+      rows <- sample(c((min_index+lookback):max_index), size = batch_size)
+    } else {
+      if (i + batch_size >= max_index)
+        i <<- min_index + lookback
+      rows <- c(i:min(i+batch_size-1, max_index))
+      i <<- i + length(rows)
+    }
+    
+    samples <- array(0, dim = c(length(rows), 
+                                lookback / step,
+                                dim(data)[[-1]]
+                                )
+                     )
+    targets <- array(0, dim = c(length(rows)
+                                )
+                     )
+                     
+    for (j in 1:length(rows)) {
+      indices <- seq(rows[[j]] - lookback, rows[[j]]-1, 
+                     length.out = dim(samples)[[2]]
+                     )
+      samples[j,,] <- data[indices,]
+      targets[[j]] <- data[rows[[j]] + delay,2]
+    }            
+    
+    list(samples, targets)
+  }
+}
+
+```
+
+
+```{r}
+
+# lookback — How many timesteps back the input data should go
+lookback <- (6 * 24 * 14) #Observations will go back 14 days
+# step — The period, in timesteps, at which you sample data. You’ll set it 6 in order to draw one data point every hour.
+step <- 6 #Observations will be sampled at one data point per hour
+# delay — How many timesteps in the future the target should be
+delay <- 3
+# batch_size — The number of samples per batch.
+batch_size <- (6 * 24 * 1) # 1 days of data #128
+
+train_gen <-
+  pmap(.l = list(a = data,
+                 b = split_pt
+                 ),
+       .f = function(a, b) {
+         dat =
+           generator(data = a,
+                     lookback = lookback,
+                     delay = delay,
+                     min_index = 1,
+                     max_index = b$train_pt,
+                     shuffle = TRUE,
+                     step = step,
+                     batch_size = batch_size
+                     )
+         
+         return(dat)
+         }
+       )
+
+val_gen <-
+  pmap(.l = list(a = data,
+                 b = split_pt
+                 ),
+       .f = function(a, b) {
+         dat =
+           generator(data = a,
+                     lookback = lookback,
+                     delay = delay,
+                     min_index = b$train_pt + 1,
+                     max_index = b$valid_pt,
+                     shuffle = TRUE,
+                     step = step,
+                     batch_size = batch_size
+                     )
+         
+         return(dat)
+         }
+       )
+
+test_gen <-
+  pmap(.l = list(a = data,
+                 b = split_pt
+                 ),
+       .f = function(a, b) {
+         dat =
+           generator(data = a,
+                     lookback = lookback,
+                     delay = delay,
+                     min_index = b$valid_pt + 1,
+                     max_index = NULL,
+                     shuffle = TRUE,
+                     step = step,
+                     batch_size = batch_size
+                     )
+         
+         return(dat)
+         }
+       )
+
+# How many steps to draw from val_gen in order to see the entire validation set
+val_steps <-
+  pmap(.l = list(a = split_pt),
+       .f = function(a) {
+         res = (a$valid_pt - a$train_pt - lookback) / batch_size
+         
+         return(res)
+         }
+       )
+
+# How many steps to draw from test_gen in order to see the entire test set
+test_steps <-
+  pmap(.l = list(a = data,
+                 b = split_pt
+                 ),
+       .f = function(a, b) {
+         res = (nrow(a) - b$valid_pt + 1 - lookback) / batch_size
+         
+         return(res)
+         }
+       )
+
+```
+  
+    
+  Basic ML model.
+```{r}
+
+basic_model <-
+  pmap(.l = list(a = data),
+       .f = function(a) {
+         keras_model_sequential() %>% 
+           layer_flatten(input_shape = c(lookback / step, dim(a)[-1])
+                         ) %>% 
+           layer_dense(units = 32, activation = "relu") %>% 
+           layer_dense(units = 1)
+         }
+       )
+
+
+basic_model %>% 
+  map(~compile(object = .x,
+               optimizer = optimizer_rmsprop(),
+               loss = "mae"
+               )
+      )
+
+history_basic_model <-
+  pmap(.l = list(a = basic_model,
+                 b = train_gen,
+                 c = val_gen,
+                 d = val_steps
+                 ),
+       .f = function(a, b, c, d) {
+         fit_generator(
+           object = a,
+           generator = b,
+           steps_per_epoch = 500, #6, #50, #500,
+           epochs = 20,
+           validation_data = c,
+           validation_steps = d
+           )
+         }
+       )
+
+```
+  
+    
+  Plot the loss curves.
+```{r}
+
+history_basic_model %>% 
+  map(~plot(.x))
+
+```
+
+  Save the resulting .rds files.
+```{r}
+
+saveRDS(basic_model,
+        paste0(wd,
+               "/Models/",
+               "basic_model.rds"
+               )
+        )
+
+# basic_model <-
+#   read_rds(path = paste0(wd,
+#                          "/Models/",
+#                          "basic_model.rds"
+#                          )
+#            )
+
+
+pmap(.l = list(a = basic_model,
+               b = names(basic_model)
+               ),
+     .f = function(a, b) {
+       save_model_hdf5(object = a,
+                       filepath = paste0(wd,
+                                         "/Models/",
+                                         "keras_basic_model_",
+                                         b,
+                                         ".h5"
+                                         )
+                       )
+       }
+     )
+
+
+saveRDS(history_basic_model,
+        paste0(wd,
+               "/Models/",
+               "history_basic_model.rds"
+               )
+        )
+
+# history_basic_model <-
+#   read_rds(path = paste0(wd,
+#                          "/Models/",
+#                          "history_basic_model.rds"
+#                          )
+#            )
+
+```
+  
+    
+  `layer_gru` model.
+```{r}
+
+gru_model <-
+  pmap(.l = list(a = data),
+       .f = function(a) {
+         keras_model_sequential() %>% 
+           layer_gru(units = 32, input_shape = list(NULL, dim(a)[[-1]])
+                     ) %>% 
+           layer_dense(units = 1)
+         }
+       )
+
+
+gru_model %>% 
+  map(~compile(object = .x,
+               optimizer = optimizer_rmsprop(),
+               loss = "mae"
+               )
+      )
+
+
+history_gru_model <-
+  pmap(.l = list(a = gru_model,
+                 b = train_gen,
+                 c = val_gen,
+                 d = val_steps
+                 ),
+       .f = function(a, b, c, d) {
+         fit_generator(
+           object = a,
+           generator = b,
+           steps_per_epoch = 500, #6, #50, #500,
+           epochs = 20,
+           validation_data = c,
+           validation_steps = d
+           )
+         }
+       )
+
+
+```
+  
+    
+  Plot the loss curves.
+```{r}
+
+history_gru_model %>% 
+  map(~plot(.x))
+
+```  
+
+
+
+  Save the resulting .rds files.
+```{r}
+
+saveRDS(gru_model,
+        paste0(wd,
+               "/Models/",
+               "gru_model.rds"
+               )
+        )
+
+# gru_model <-
+#   read_rds(path = paste0(wd,
+#                          "/Models/",
+#                          "gru_model.rds"
+#                          )
+#            )
+
+
+pmap(.l = list(a = gru_model,
+               b = names(gru_model)
+               ),
+     .f = function(a, b) {
+       save_model_hdf5(object = a,
+                       filepath = paste0(wd,
+                                         "/Models/",
+                                         "keras_gru_model_",
+                                         b,
+                                         ".h5"
+                                         )
+                       )
+       }
+     )
+
+
+saveRDS(history_gru_model,
+        paste0(wd,
+               "/Models/",
+               "history_gru_model.rds"
+               )
+        )
+
+# history_gru_model <-
+#   read_rds(path = paste0(wd,
+#                          "/Models/",
+#                          "history_gru_model.rds"
+#                          )
+#            )
+
+```
+  
+
+
+  
+  
