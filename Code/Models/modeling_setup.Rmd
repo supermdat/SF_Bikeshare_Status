@@ -4,7 +4,12 @@ output: html_notebook
 ---
 
 
-  
+**NOTE:** before running this chunk, the AWS Instance Type was switched from t2.micro to t3.2xlarge.
+
+**NOTE:** This should be run before each new model to create the relevant dataset for modeling:  lmtd_vars_lag3.
+
+
+
 ## Setup    
   Load the relevant libraries.
 ```{r}
@@ -15,14 +20,8 @@ output: html_notebook
 
 
 library("tidyverse")
-# install.packages("data.table")
 library("data.table")
-# library("lubridate")
-# install.packages("timetk")
-# library("timetk")
-# library("DBI")
-# install.packages("RSQLite")
-# library("RSQLite")
+library("caret")
 
 ```
   
@@ -151,7 +150,7 @@ pmap(.l = list(a = id_split,
        }
      )
 
-View(id_split$`10` %>% head(1000))
+# View(id_split$`10` %>% head(1000))
 
 ```
   
@@ -159,21 +158,191 @@ View(id_split$`10` %>% head(1000))
   Save the data.
 ```{r}
 
-write_rds(id_split,
-          path = paste0(wd,
-                        "/Data/Interim/",
-                        "id_split.rds"
-                        )
-          )
+# write_rds(id_split,
+#           path = paste0(wd,
+#                         "/Data/Interim/",
+#                         "id_split.rds"
+#                         )
+#           )
 
 ```
+  
+    
+  Limit the varaibles to a smaller amount to speed up calculations.
+```{r}
+
+small_test <-
+  id_split %>%
+  map(~select(.x,
+              row_num,
+              data_type,
+              time_rnd,
+              station_id,
+              bikes_avail_now,
+              bikes_avail_lag05,
+              bikes_avail_lag10,
+              bikes_avail_lag15,
+              wday.lbl,
+              hour,
+              minute
+              )
+      )
+
+glimpse(small_test$`10`)
+
+```
+  
+    
+  One-hot enconde the data.
+```{r}
+
+one_hot <-
+  pmap(.l = list(a = small_test),
+       .f = function(a) {
+         df = select(a,
+                     -station_id,
+                     -data_type,
+                     -time_rnd,
+                     -row_num
+                     )
+         
+         dmy = dummyVars(bikes_avail_now ~ ., data = df)
+         
+         return(dmy)
+         }
+       )
+
+
+id_split_one_hot <-
+  pmap(.l = list(a = one_hot,
+                 b = id_split
+                 ),
+       .f = function(a, b) {
+         b %>%
+           select(station_id,
+                  data_type,
+                  bikes_avail_now,
+                  time_rnd,
+                  row_num
+                  ) %>% 
+           bind_cols(predict(object = a,
+                             newdata = b %>% 
+                               select(-station_id,
+                                      -data_type,
+                                      -time_rnd,
+                                      -row_num
+                                      )
+                             ) %>% 
+                       as.data.frame()
+                     ) %>% 
+           arrange(time_rnd)
+         }
+       )
+
+class(id_split_one_hot$`10`)
+glimpse(id_split_one_hot$`10`)
+# View(id_split_one_hot$`10` %>% head(100))
+
+
+rm(one_hot)
+
+```
+  
+    
+  Create lags of 3.
+```{r}
+
+vars_to_lag_dt <-
+  id_split_one_hot %>% 
+  map(~select(.x, wday.lbl.Friday:minute.55) %>%
+        as.data.table()
+      )
+
+vars_to_not_lag_dt <-
+  id_split_one_hot %>% 
+  map(~select(.x,
+              station_id:bikes_avail_lag15,
+              ) %>% 
+        as.data.table()
+      )
+
+# id_split %>% map(~colnames(.x))
+# vars_to_lag_dt %>% map(~colnames(.x))
+
+lags_3 <-
+  pmap(.l = list(a = vars_to_lag_dt),
+       .f = function(a) {
+         dat = a[ , sapply(names(a),
+                           function(x) {
+                             paste0(x, '_lag', c("05min", "10min", "15min"))
+                             }
+                           ) := shift(.SD, 1:3),
+                  .SDcols = wday.lbl.Friday:minute.55
+                  ][]
+         
+         dat = dat[4:nrow(a), ]
+         
+         return(dat)
+         }
+       )
+# lags_3$`10` %>% select(matches("minute\\.0")) %>% head(100) %>% View()
+
+lmtd_vars_lag3 <-
+  pmap(.l = list(a = vars_to_not_lag_dt,
+                 b = lags_3
+                 ),
+       .f = function(a, b) {
+         bind_cols(a[4:nrow(a), ],
+                   b
+                   ) %>% 
+           select(-(wday.lbl.Friday:minute.55)
+                  )
+         }
+       )
+
+# lmtd_vars_lag3 %>% map(~colnames(.x))
+lmtd_vars_lag3$`10` %>% glimpse()
+# View(lmtd_vars_lag3$`10` %>% 
+#        select(time_rnd,
+#               matches("month\\.lbl\\.August")
+#               ) %>% 
+#        head(100)
+#      )
+# View(lmtd_vars_lag3$`10` %>% 
+#        select(time_rnd,
+#               matches("minute\\.0")
+#               ) %>% 
+#        head(100)
+#      )
+((lmtd_vars_lag3$`10` %>% ncol()) - 5) / 3 # remove 5 non-lagged variables, and dividing by 3 gives the total number of vars without ags
+
+
+rm(vars_to_lag_dt, vars_to_not_lag_dt, lags_3)
+
+```
+  
+    
+  Save the data.
+```{r}
+
+# write_rds(lmtd_vars_lag3,
+#           path = paste0(wd,
+#                         "/Data/Interim/",
+#                         "lmtd_vars_lag3.rds"
+#                         )
+#           )
+
+```  
   
     
   Remove no-longer-needed files.
 ```{r}
 
-rm(status_trips_time)
+rm(id_split, id_split_one_hot, small_test, status_trips_time, func_train_valid_test)
 
 ```
   
+
+**NOTE:** Don't forget to switch the AWS Instance Type was switched from t3.2xlarge. back to t2.micro.
+
 
