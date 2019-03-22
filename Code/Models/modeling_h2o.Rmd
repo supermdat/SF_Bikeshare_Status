@@ -5,6 +5,7 @@ output: html_notebook
 
 
   
+
 ## Setup    
   Load the relevant libraries.
 ```{r}
@@ -23,8 +24,7 @@ library("data.table")
 # library("DBI")
 # install.packages("RSQLite")
 # library("RSQLite")
-# install.packages("h2o")
-library("h2o")
+
 
 ```
   
@@ -57,6 +57,7 @@ wd
 ```
   
     
+
   Get the base dataset.
 ```{r}
 
@@ -68,45 +69,6 @@ id_split <-
            )
 
 
-pmap(.l = list(a = id_split,
-               b = names(id_split)
-               ),
-     .f = function(a, b) {
-       message(b)
-       
-       str(a)
-       }
-     )
-
-View(id_split$`10` %>% head(1000))
-
-```
-
-
-
-```{r}
-
-row_cnt <- id_split$`10` %>% 
-  nrow()
-
-split_pt_test <- round(0.80 * row_cnt, digits = 0) + 1
-split_pt_train <- round(0.64 * row_cnt, digits = 0)
-split_pt_valid <- round(split_pt_train * 0.80, digits = 0)
-
-```
-
-
-
-
-Save the data.
-```{r}
-
-write_rds(sss,
-          path = paste0(wd,
-                        "/Data/Interim/",
-                        "sss.rds"
-                        )
-          )
 
 ```
   
@@ -114,7 +76,7 @@ write_rds(sss,
   Remove no-longer-needed files.
 ```{r}
 
-rm(status_trips_time)
+
 
 ```
   

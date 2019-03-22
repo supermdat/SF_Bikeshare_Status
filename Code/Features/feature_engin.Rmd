@@ -72,12 +72,49 @@ str(status_trips)
 ```
   
     
+  Create lagged variables.
+```{r}
+
+lags <-
+  status_trips %>% 
+  rename(bikes_avail_now = bikes_available,
+         docks_avail_now = docks_available,
+         Customer_cnt_05min_window_end = Customer_cnt_5min_window_end,
+         Customer_cnt_05min_window_start = Customer_cnt_5min_window_start,
+         Subscriber_cnt_05min_window_end = Subscriber_cnt_5min_window_end,
+         Subscriber_cnt_05min_window_start = Subscriber_cnt_5min_window_start
+         ) %>% 
+  group_by(station_id) %>% 
+  mutate(bikes_avail_lag05 = dplyr::lag(bikes_avail_now, n = 1),
+         bikes_avail_lag10 = dplyr::lag(bikes_avail_now, n = 2),
+         bikes_avail_lag15 = dplyr::lag(bikes_avail_now, n = 3),
+         Customer_cnt_10min_window_end = dplyr::lag(Customer_cnt_05min_window_end, n = 1),
+         Customer_cnt_15min_window_end = dplyr::lag(Customer_cnt_05min_window_end, n = 2),
+         Customer_cnt_10min_window_start = dplyr::lag(Customer_cnt_05min_window_start, n = 1),
+         Customer_cnt_15min_window_start = dplyr::lag(Customer_cnt_05min_window_start, n = 2),
+         Subscriber_cnt_10min_window_end = dplyr::lag(Subscriber_cnt_05min_window_end, n = 1),
+         Subscriber_cnt_15min_window_end = dplyr::lag(Subscriber_cnt_05min_window_end, n = 2),
+         Subscriber_cnt_10min_window_start = dplyr::lag(Subscriber_cnt_05min_window_start,
+                                                        n = 1),
+         Subscriber_cnt_15min_window_start = dplyr::lag(Subscriber_cnt_05min_window_start,
+                                                        n = 2)
+         ) %>% 
+  ungroup() %>%  
+  as.data.table() %>% 
+  setkey(station_id, time_rnd)
+
+str(lags)
+# View(lags %>% head(1000))
+
+```
+  
+    
   Create time-based variables.
 ```{r}
 
 # status_trips %>% mutate(date = as_date(time_rnd)) %>% select(date) %>% distinct() %>% nrow()
-date_min <- min(status_trips$time_rnd)
-date_max <- max(status_trips$time_rnd)
+date_min <- min(lags$time_rnd)
+date_max <- max(lags$time_rnd)
 
 time_dt <-
   data.frame(date = seq.POSIXt(from = date_min, to = date_max, by = "5 mins")) %>% 
@@ -116,7 +153,7 @@ str(time_dt)
 ```{r}
 
 status_trips_time <-
-  merge(x = status_trips,
+  merge(x = lags,
         y = time_dt,
         by.x = "time_rnd",
         by.y = "date",
@@ -146,7 +183,7 @@ write_rds(status_trips_time,
   Remove no-longer-needed files.
 ```{r}
 
-rm(status_trips, time_dt, date_min, date_max)
+rm(status_trips, lags, time_dt, date_min, date_max)
 
 ```
   
